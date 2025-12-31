@@ -8,10 +8,10 @@ from collections import Counter
 
 DetectorFactory.seed = 0  # 保持 langdetect 结果稳定
 
+
 def detect_language(text, min_chars=100):
     """改进的语言检测（字符占比 + langdetect）"""
-    if len(text) < min_chars:
-        return "en"  # 文本太短，默认认为是英文（避免误判）
+    text = text or ""
 
     # 统计字符占比
     chinese_count = len(re.findall(r"[\u4e00-\u9fff]", text))  # 中文字符
@@ -34,6 +34,13 @@ def detect_language(text, min_chars=100):
         return "zh-cn"
     elif jpn_ratio > 0.5:
         return "ja"
+
+    if total_chars < min_chars:
+        if chi_ratio >= max(eng_ratio, jpn_ratio):
+            return "zh-cn"
+        if jpn_ratio >= max(eng_ratio, chi_ratio):
+            return "ja"
+        return "en"
 
     # 语言混合时才用 langdetect 进一步检测
     results = []
@@ -75,7 +82,8 @@ def extract_text_from_pdf(pdf_path, output_folder):
                 with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
                     f.write(text)
 
-            detected_lang = detect_language(text_for_language_detection)
+            lang_sample = text_for_language_detection.strip() or full_text
+            detected_lang = detect_language(lang_sample)
             # 存入环境变量（适用于当前运行环境）
             os.environ["DETECTED_LANG"] = detected_lang
 
@@ -97,7 +105,8 @@ def extract_text_from_pdf(pdf_path, output_folder):
                 with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
                     f.write(text)
 
-            detected_lang = detect_language(text_for_language_detection)
+            lang_sample = text_for_language_detection.strip() or full_text
+            detected_lang = detect_language(lang_sample)
 
             # 存入环境变量（适用于当前运行环境）
             os.environ["DETECTED_LANG"] = detected_lang
