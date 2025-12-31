@@ -15,8 +15,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 INPUT_DIR = BASE_DIR / "Input" / "pdfData"
 WORD_INPUT_DIR = BASE_DIR / "Input" / "wordData"
 TEXT_DIR = BASE_DIR / "Output" / "text"
-OUTPUT_TXT = BASE_DIR / "Output" / "综合文档.txt"
-OUTPUT_WORD_TXT = BASE_DIR / "Output" / "综合文档word版本.txt"
+OUTPUT_DIR = TEXT_DIR / "combined_documents"
+OUTPUT_PDF_TXT = OUTPUT_DIR / "综合文档pdf版本.txt"
+OUTPUT_WORD_TXT = OUTPUT_DIR / "综合文档word版本.txt"
+OUTPUT_MERGED_TXT = OUTPUT_DIR / "综合合并文档.txt"
 TITLE_WIDTH = 80
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 HYPERLINK_LINE_RE = re.compile(r"^HYPERLINK\\b", re.IGNORECASE)
@@ -155,10 +157,10 @@ def write_combined_pdf_txt(pdf_files: List[Path]) -> None:
         return
 
     TEXT_DIR.mkdir(parents=True, exist_ok=True)
-    OUTPUT_TXT.parent.mkdir(parents=True, exist_ok=True)
-    used_folder_names: Set[str] = set()
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    used_folder_names: Set[str] = {OUTPUT_DIR.name.lower()}
 
-    with open(OUTPUT_TXT, "w", encoding="utf-8") as output_file:
+    with open(OUTPUT_PDF_TXT, "w", encoding="utf-8") as output_file:
         for index, pdf_file in enumerate(pdf_files):
             output_folder = resolve_output_folder(pdf_file, used_folder_names)
             extract_text_from_pdf(str(pdf_file), str(output_folder))
@@ -174,14 +176,14 @@ def write_combined_pdf_txt(pdf_files: List[Path]) -> None:
                     output_file.write("\n")
                 output_file.write(page_text)
                 first_page = False
-    print(f"✅ 综合文档文本已生成: {OUTPUT_TXT}")
+    print(f"✅ 综合文档 PDF 版本已生成: {OUTPUT_PDF_TXT}")
 
 
 def write_combined_word_txt(word_files: List[Path]) -> None:
     if not word_files:
         return
 
-    OUTPUT_WORD_TXT.parent.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     with open(OUTPUT_WORD_TXT, "w", encoding="utf-8") as output_file:
         for index, word_file in enumerate(word_files):
@@ -199,14 +201,33 @@ def write_combined_word_txt(word_files: List[Path]) -> None:
     print(f"✅ 综合文档 Word 版本已生成: {OUTPUT_WORD_TXT}")
 
 
+def write_merged_txt(files: List[Path], output_path: Path) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    wrote_any = False
+    with open(output_path, "w", encoding="utf-8") as output_file:
+        for source_path in files:
+            if not source_path.exists() or source_path.stat().st_size == 0:
+                continue
+            if wrote_any:
+                output_file.write("\n\n")
+            with open(source_path, "r", encoding="utf-8", errors="ignore") as source_file:
+                shutil.copyfileobj(source_file, output_file)
+            wrote_any = True
+    if wrote_any:
+        print(f"✅ 综合合并文档已生成: {output_path}")
+
+
 def main() -> None:
     pdf_files = list_pdf_files(INPUT_DIR)
     word_files = list_word_files(WORD_INPUT_DIR)
     if not pdf_files and not word_files:
         return
 
-    write_combined_pdf_txt(pdf_files)
-    write_combined_word_txt(word_files)
+    if pdf_files:
+        write_combined_pdf_txt(pdf_files)
+    if word_files:
+        write_combined_word_txt(word_files)
+    write_merged_txt([OUTPUT_PDF_TXT, OUTPUT_WORD_TXT], OUTPUT_MERGED_TXT)
 
 
 if __name__ == "__main__":
