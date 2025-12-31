@@ -1,13 +1,26 @@
+import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Iterable, List, Set
 
 from pdf_reader import extract_text_from_pdf
 
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 INPUT_DIR = BASE_DIR / "Input" / "pdfData"
+WORD_INPUT_DIR = BASE_DIR / "Input" / "wordData"
 TEXT_DIR = BASE_DIR / "Output" / "text"
 OUTPUT_TXT = BASE_DIR / "Output" / "综合文档.txt"
+OUTPUT_WORD_TXT = BASE_DIR / "Output" / "综合文档word版本.txt"
 TITLE_WIDTH = 80
+CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+HYPERLINK_LINE_RE = re.compile(r"^HYPERLINK\\b", re.IGNORECASE)
+PAGE_FIELD_RE = re.compile(r"^PAGE/NUMPAGES$", re.IGNORECASE)
 
 
 def list_pdf_files(input_dir: Path) -> List[Path]:
@@ -22,6 +35,20 @@ def list_pdf_files(input_dir: Path) -> List[Path]:
     if not pdf_files:
         print(f"❌ 没有找到 PDF 文件，请放入目录: {input_dir}")
     return sorted(pdf_files, key=lambda p: p.name.lower())
+
+
+def list_word_files(input_dir: Path) -> List[Path]:
+    if not input_dir.exists():
+        print(f"❌ 输入目录不存在: {input_dir}")
+        return []
+
+    word_files = [
+        path for path in input_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in {".doc", ".docx"}
+    ]
+    if not word_files:
+        print(f"❌ 没有找到 Word 文件（.doc/.docx），请放入目录: {input_dir}")
+    return sorted(word_files, key=lambda p: p.name.lower())
 
 
 def iter_page_files(folder: Path) -> List[Path]:
@@ -51,6 +78,60 @@ def read_text_from_folder(folder: Path) -> str:
     return "\n".join(iter_page_texts(folder)).strip()
 
 
+def iter_word_texts(word_path: Path) -> Iterable[str]:
+    def clean_text(value: str) -> str:
+        return CONTROL_CHARS_RE.sub("", value).strip()
+
+    suffix = word_path.suffix.lower()
+    if suffix == ".docx":
+        if DocxDocument is None:
+            print("❌ 缺少依赖 python-docx，请先安装: pip install python-docx")
+            return
+
+        doc = DocxDocument(word_path)
+        for paragraph in doc.paragraphs:
+            text = clean_text(paragraph.text)
+            if text and not HYPERLINK_LINE_RE.match(text) and not PAGE_FIELD_RE.match(text):
+                yield text
+
+        for table in doc.tables:
+            for row in table.rows:
+                cells = []
+                for cell in row.cells:
+                    cell_text = " ".join(
+                        clean_text(p.text) for p in cell.paragraphs if clean_text(p.text)
+                    ).strip()
+                    cells.append(cell_text)
+                row_text = clean_text("\t".join(cells))
+                if row_text and not HYPERLINK_LINE_RE.match(row_text) and not PAGE_FIELD_RE.match(row_text):
+                    yield row_text
+        return
+
+    if suffix == ".doc":
+        textutil_path = shutil.which("textutil")
+        if not textutil_path:
+            print("❌ 无法读取 .doc 文件，请先安装 LibreOffice 或转换为 .docx")
+            return
+        result = subprocess.run(
+            [textutil_path, "-convert", "txt", "-stdout", str(word_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        if result.returncode != 0:
+            message = result.stderr.strip() or "转换失败"
+            print(f"❌ .doc 解析失败: {word_path.name}（{message}）")
+            return
+        for line in result.stdout.splitlines():
+            line = clean_text(line)
+            if line and not HYPERLINK_LINE_RE.match(line) and not PAGE_FIELD_RE.match(line):
+                yield line
+        return
+
+    print(f"❌ 不支持的 Word 格式: {word_path.name}")
+
+
 def format_title_line(filename: str) -> str:
     title = filename.strip()
     if len(title) >= TITLE_WIDTH:
@@ -69,8 +150,7 @@ def resolve_output_folder(pdf_file: Path, used_names: Set[str]) -> Path:
     return TEXT_DIR / candidate
 
 
-def main() -> None:
-    pdf_files = list_pdf_files(INPUT_DIR)
+def write_combined_pdf_txt(pdf_files: List[Path]) -> None:
     if not pdf_files:
         return
 
@@ -95,6 +175,38 @@ def main() -> None:
                 output_file.write(page_text)
                 first_page = False
     print(f"✅ 综合文档文本已生成: {OUTPUT_TXT}")
+
+
+def write_combined_word_txt(word_files: List[Path]) -> None:
+    if not word_files:
+        return
+
+    OUTPUT_WORD_TXT.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(OUTPUT_WORD_TXT, "w", encoding="utf-8") as output_file:
+        for index, word_file in enumerate(word_files):
+            if index > 0:
+                output_file.write("\n\n")
+
+            output_file.write(f"{format_title_line(word_file.name)}\n")
+
+            first_line = True
+            for line in iter_word_texts(word_file):
+                if not first_line:
+                    output_file.write("\n")
+                output_file.write(line)
+                first_line = False
+    print(f"✅ 综合文档 Word 版本已生成: {OUTPUT_WORD_TXT}")
+
+
+def main() -> None:
+    pdf_files = list_pdf_files(INPUT_DIR)
+    word_files = list_word_files(WORD_INPUT_DIR)
+    if not pdf_files and not word_files:
+        return
+
+    write_combined_pdf_txt(pdf_files)
+    write_combined_word_txt(word_files)
 
 
 if __name__ == "__main__":
