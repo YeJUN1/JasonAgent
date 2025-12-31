@@ -1,10 +1,14 @@
-import pdfplumber
-from pdf2image import convert_from_path
-import pytesseract
 import os
 import re
-from langdetect import detect, DetectorFactory
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from io import BytesIO
+
+import pdfplumber
+from pdf2image import convert_from_path
+from langdetect import detect, DetectorFactory
+
+from ocr_client import ocr_image_bytes_to_text, resolve_ocr_workers, resolve_visual_ocr_config
 
 DetectorFactory.seed = 0  # 保持 langdetect 结果稳定
 
@@ -66,6 +70,16 @@ def extract_text_from_pdf(pdf_path, output_folder):
     text_for_language_detection = ""  # 用于语言检测的文本
 
     with pdfplumber.open(pdf_path) as pdf:
+        page_count = len(pdf.pages)
+        if page_count >= 5:
+            sample_start_index = 4
+        elif page_count >= 3:
+            sample_start_index = 2
+        elif page_count >= 2:
+            sample_start_index = 1
+        else:
+            sample_start_index = 0
+
         if any(page.extract_text() for page in pdf.pages[:3]):
             is_text_pdf = True
 
@@ -75,8 +89,8 @@ def extract_text_from_pdf(pdf_path, output_folder):
                 text = page.extract_text() or ""
                 full_text += text + "\n"
 
-                # 只从第 5 页开始统计语言
-                if i >= 4:
+                # 根据页数选择统计起始页
+                if i >= sample_start_index:
                     text_for_language_detection += text + "\n"
 
                 with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
@@ -93,17 +107,44 @@ def extract_text_from_pdf(pdf_path, output_folder):
                 f.write(detected_lang)
         else:
             print("🖼️ 该 PDF 似乎是影印版，使用 OCR 识别...")
-            images = convert_from_path(pdf_path)
-            for i, image in enumerate(images):
-                text = pytesseract.image_to_string(image, lang="eng")  # 先默认英文
-                full_text += text + "\n"
+            config = resolve_visual_ocr_config()
+            if not config:
+                print("❌ 缺少 OCR 配置，无法识别影印版 PDF")
+                for i in range(len(pdf.pages)):
+                    with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
+                        f.write("")
+            else:
+                images = convert_from_path(pdf_path)
+                results = [""] * len(images)
+                workers = resolve_ocr_workers()
 
-                # 只从第 5 页开始统计语言
-                if i >= 4:
-                    text_for_language_detection += text + "\n"
+                def ocr_page(image):
+                    buffer = BytesIO()
+                    image.save(buffer, format="PNG")
+                    return ocr_image_bytes_to_text(buffer.getvalue(), config)
 
-                with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
-                    f.write(text)
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_map = {
+                        executor.submit(ocr_page, image): i
+                        for i, image in enumerate(images)
+                    }
+                    for future in as_completed(future_map):
+                        index = future_map[future]
+                        try:
+                            results[index] = future.result() or ""
+                        except Exception as exc:
+                            print(f"❌ OCR 识别失败: 第{index + 1}页（{exc}）")
+                            results[index] = ""
+
+                for i, text in enumerate(results):
+                    full_text += text + "\n"
+
+                    # 根据页数选择统计起始页
+                    if i >= sample_start_index:
+                        text_for_language_detection += text + "\n"
+
+                    with open(f"{output_folder}/page_{i + 1}.txt", "w", encoding="utf-8") as f:
+                        f.write(text)
 
             lang_sample = text_for_language_detection.strip() or full_text
             detected_lang = detect_language(lang_sample)

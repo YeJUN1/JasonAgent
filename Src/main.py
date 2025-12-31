@@ -1,10 +1,18 @@
+import concurrent.futures
+import json
+import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Iterable, List, Set
+from typing import Iterable, List, Optional, Set
 
 from pdf_reader import extract_text_from_pdf
+from ocr_client import (
+    ocr_image_path_to_text,
+    resolve_ocr_workers,
+    resolve_visual_ocr_config,
+)
 
 try:
     from docx import Document as DocxDocument
@@ -14,15 +22,20 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent.parent
 INPUT_DIR = BASE_DIR / "Input" / "pdfData"
 WORD_INPUT_DIR = BASE_DIR / "Input" / "wordData"
+PHOTO_INPUT_DIR = BASE_DIR / "Input" / "photoData"
 TEXT_DIR = BASE_DIR / "Output" / "text"
+PHOTO_TEXT_DIR = TEXT_DIR / "photo_texts"
 OUTPUT_DIR = TEXT_DIR / "combined_documents"
 OUTPUT_PDF_TXT = OUTPUT_DIR / "综合文档pdf版本.txt"
 OUTPUT_WORD_TXT = OUTPUT_DIR / "综合文档word版本.txt"
 OUTPUT_MERGED_TXT = OUTPUT_DIR / "综合合并文档.txt"
+OUTPUT_PHOTO_TXT = OUTPUT_DIR / "综合文档图片版本.txt"
+SNAPSHOT_FILE = OUTPUT_DIR / "input_snapshot.json"
 TITLE_WIDTH = 80
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 HYPERLINK_LINE_RE = re.compile(r"^HYPERLINK\\b", re.IGNORECASE)
 PAGE_FIELD_RE = re.compile(r"^PAGE/NUMPAGES$", re.IGNORECASE)
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif", ".webp"}
 
 
 def list_pdf_files(input_dir: Path) -> List[Path]:
@@ -51,6 +64,20 @@ def list_word_files(input_dir: Path) -> List[Path]:
     if not word_files:
         print(f"❌ 没有找到 Word 文件（.doc/.docx），请放入目录: {input_dir}")
     return sorted(word_files, key=lambda p: p.name.lower())
+
+
+def list_photo_files(input_dir: Path) -> List[Path]:
+    if not input_dir.exists():
+        print(f"❌ 输入目录不存在: {input_dir}")
+        return []
+
+    photo_files = [
+        path for path in input_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS
+    ]
+    if not photo_files:
+        print(f"❌ 没有找到图片文件，请放入目录: {input_dir}")
+    return sorted(photo_files, key=lambda p: p.name.lower())
 
 
 def iter_page_files(folder: Path) -> List[Path]:
@@ -141,15 +168,39 @@ def format_title_line(filename: str) -> str:
     return title.center(TITLE_WIDTH)
 
 
-def resolve_output_folder(pdf_file: Path, used_names: Set[str]) -> Path:
-    base_name = pdf_file.stem.strip() or "pdf"
-    candidate = base_name
+def load_env_file(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def unique_name(base_name: str, used_names: Set[str], fallback: str = "item") -> str:
+    base = base_name.strip() or fallback
+    candidate = base
     index = 1
     while candidate.lower() in used_names:
-        candidate = f"{base_name}_{index}"
+        candidate = f"{base}_{index}"
         index += 1
     used_names.add(candidate.lower())
+    return candidate
+
+
+def resolve_output_folder(pdf_file: Path, used_names: Set[str]) -> Path:
+    candidate = unique_name(pdf_file.stem, used_names, fallback="pdf")
     return TEXT_DIR / candidate
+
+
+def resolve_output_text_file(base_name: str, used_names: Set[str], folder: Path) -> Path:
+    candidate = unique_name(base_name, used_names, fallback="text")
+    return folder / f"{candidate}.txt"
 
 
 def write_combined_pdf_txt(pdf_files: List[Path]) -> None:
@@ -201,6 +252,53 @@ def write_combined_word_txt(word_files: List[Path]) -> None:
     print(f"✅ 综合文档 Word 版本已生成: {OUTPUT_WORD_TXT}")
 
 
+def ocr_image_to_text(image_path: Path, config: Optional[dict] = None) -> str:
+    return ocr_image_path_to_text(image_path, config)
+
+
+def write_combined_photo_txt(photo_files: List[Path]) -> None:
+    if not photo_files:
+        return
+
+    config = resolve_visual_ocr_config()
+    if not config:
+        return
+
+    PHOTO_TEXT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    used_names: Set[str] = set()
+    workers = resolve_ocr_workers()
+
+    results: List[str] = [""] * len(photo_files)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        future_map = {
+            executor.submit(ocr_image_to_text, photo_file, config): index
+            for index, photo_file in enumerate(photo_files)
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            index = future_map[future]
+            try:
+                results[index] = future.result() or ""
+            except Exception as exc:
+                print(f"❌ OCR 识别失败: {photo_files[index].name}（{exc}）")
+                results[index] = ""
+
+    with open(OUTPUT_PHOTO_TXT, "w", encoding="utf-8") as output_file:
+        for index, photo_file in enumerate(photo_files):
+            if index > 0:
+                output_file.write("\n\n")
+
+            output_file.write(f"{format_title_line(photo_file.name)}\n")
+            text = results[index]
+            if text:
+                output_file.write(text)
+
+            output_text_path = resolve_output_text_file(photo_file.stem, used_names, PHOTO_TEXT_DIR)
+            output_text_path.write_text(text, encoding="utf-8")
+
+    print(f"✅ 综合文档 图片版本已生成: {OUTPUT_PHOTO_TXT}")
+
+
 def write_merged_txt(files: List[Path], output_path: Path) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     wrote_any = False
@@ -217,17 +315,62 @@ def write_merged_txt(files: List[Path], output_path: Path) -> None:
         print(f"✅ 综合合并文档已生成: {output_path}")
 
 
+def load_snapshot(snapshot_path: Path) -> dict:
+    if not snapshot_path.exists():
+        return {}
+    try:
+        return json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_snapshot(snapshot: dict, snapshot_path: Path) -> None:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_text(
+        json.dumps(snapshot, ensure_ascii=True, indent=2),
+        encoding="utf-8",
+    )
+
+
+def cleanup_outputs() -> None:
+    if OUTPUT_DIR.exists():
+        shutil.rmtree(OUTPUT_DIR)
+    if not TEXT_DIR.exists():
+        return
+    for entry in TEXT_DIR.iterdir():
+        if entry == OUTPUT_DIR:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        elif entry.is_file() and entry.suffix.lower() == ".txt":
+            entry.unlink()
+
+
 def main() -> None:
+    load_env_file(BASE_DIR / ".env")
     pdf_files = list_pdf_files(INPUT_DIR)
     word_files = list_word_files(WORD_INPUT_DIR)
-    if not pdf_files and not word_files:
+    photo_files = list_photo_files(PHOTO_INPUT_DIR)
+    current_snapshot = {
+        "pdf": sorted(file.name for file in pdf_files),
+        "word": sorted(file.name for file in word_files),
+        "photo": sorted(file.name for file in photo_files),
+    }
+    previous_snapshot = load_snapshot(SNAPSHOT_FILE)
+    if current_snapshot == previous_snapshot:
+        print("ℹ️ 输入文件未变更，跳过重新生成。")
         return
+
+    cleanup_outputs()
 
     if pdf_files:
         write_combined_pdf_txt(pdf_files)
     if word_files:
         write_combined_word_txt(word_files)
-    write_merged_txt([OUTPUT_PDF_TXT, OUTPUT_WORD_TXT], OUTPUT_MERGED_TXT)
+    if photo_files:
+        write_combined_photo_txt(photo_files)
+    write_merged_txt([OUTPUT_PDF_TXT, OUTPUT_WORD_TXT, OUTPUT_PHOTO_TXT], OUTPUT_MERGED_TXT)
+    save_snapshot(current_snapshot, SNAPSHOT_FILE)
 
 
 if __name__ == "__main__":
