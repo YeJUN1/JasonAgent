@@ -5,7 +5,6 @@ from typing import Any, Dict, Iterable, List, Optional
 from volcenginesdkarkruntime import Ark
 
 DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-DEFAULT_MODEL = "doubao-seed-1-6-251015"
 
 
 def build_messages(text: str, image_url: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -34,6 +33,13 @@ def create_client(
     return Ark(base_url=base_url, api_key=key)
 
 
+def resolve_model(model: Optional[str] = None) -> str:
+    selected = model or os.environ.get("DOUBAO_MODEL")
+    if not selected:
+        raise RuntimeError("Missing DOUBAO_MODEL environment variable.")
+    return selected
+
+
 def load_env_file(env_path: Optional[Path] = None) -> None:
     path = env_path or (Path(__file__).resolve().parent.parent / ".env")
     if not path.exists():
@@ -51,12 +57,13 @@ def load_env_file(env_path: Optional[Path] = None) -> None:
 
 def chat_completion(
     messages: List[Dict[str, Any]],
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     api_key: Optional[str] = None,
     reasoning_effort: str = "medium",
 ) -> str:
     client = create_client(api_key=api_key, base_url=base_url)
+    model = resolve_model(model)
     completion = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -67,12 +74,13 @@ def chat_completion(
 
 def chat_completion_stream(
     messages: List[Dict[str, Any]],
-    model: str = DEFAULT_MODEL,
+    model: Optional[str] = None,
     base_url: str = DEFAULT_BASE_URL,
     api_key: Optional[str] = None,
     reasoning_effort: str = "medium",
 ) -> Iterable[str]:
     client = create_client(api_key=api_key, base_url=base_url)
+    model = resolve_model(model)
     stream = client.chat.completions.create(
         model=model,
         messages=messages,
