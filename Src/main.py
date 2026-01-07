@@ -37,6 +37,8 @@ OUTPUT_PHOTO_TXT = OUTPUT_DIR / "综合文档图片版本.txt"
 OUTPUT_KEYINFO_TXT = OUTPUT_DIR / "关键要素信息提取文档要求.txt"
 OUTPUT_EVIDENCE_TXT = OUTPUT_DIR / "质证意见文档要求.txt"
 OUTPUT_EVIDENCE_SUGGESTIONS_TXT = OUTPUT_DIR / "补充证据建议清单要求文档.txt"
+OUTPUT_COMPLAINT_TXT = OUTPUT_DIR / "起诉状要求文档.txt"
+OUTPUT_EVIDENCE_CATALOG_TXT = OUTPUT_DIR / "证据目录.txt"
 OUTPUT_DISPUTE_FOCUS_TXT = OUTPUT_DIR / "争议识别要求文档.txt"
 OUTPUT_LEGAL_BASIS_TXT = OUTPUT_DIR / "法律依据要求文档.txt"
 OUTPUT_RISK_STRATEGY_TXT = OUTPUT_DIR / "风险评估报告和应对建议要求文档.txt"
@@ -617,6 +619,8 @@ def main() -> None:
         (OUTPUT_KEYINFO_TXT, "关键要素信息提取文档要求", "PROMPT_KEYINFO"),
         (OUTPUT_EVIDENCE_TXT, "质证意见文档要求", "PROMPT_EVIDENCE"),
         (OUTPUT_EVIDENCE_SUGGESTIONS_TXT, "补充证据建议清单要求文档", "PROMPT_EVIDENCE_SUGGESTIONS"),
+        (OUTPUT_COMPLAINT_TXT, "起诉状要求文档", "PROMPT_COMPLAINT_PETITION"),
+        (OUTPUT_EVIDENCE_CATALOG_TXT, "证据目录", "PROMPT_EVIDENCE_CATALOG"),
         (OUTPUT_DISPUTE_FOCUS_TXT, "争议识别要求文档", "PROMPT_DISPUTE_FOCUS"),
         (OUTPUT_LEGAL_BASIS_TXT, "法律依据要求文档", "PROMPT_LEGAL_BASIS"),
         (OUTPUT_RISK_STRATEGY_TXT, "风险评估报告和应对建议要求文档", "PROMPT_RISK_STRATEGY"),
@@ -627,6 +631,16 @@ def main() -> None:
             "input": OUTPUT_EVIDENCE_SUGGESTIONS_TXT,
             "output_docx": AI_OUTPUT_DIR / "补充证据建议清单文档_AI.docx",
             "output_md": AI_OUTPUT_DIR / "补充证据建议清单文档_AI.md",
+        },
+        {
+            "input": OUTPUT_EVIDENCE_CATALOG_TXT,
+            "output_docx": AI_OUTPUT_DIR / "证据目录_AI.docx",
+            "output_md": AI_OUTPUT_DIR / "证据目录_AI.md",
+        },
+        {
+            "input": OUTPUT_COMPLAINT_TXT,
+            "output_docx": AI_OUTPUT_DIR / "起诉状_AI.docx",
+            "output_md": AI_OUTPUT_DIR / "起诉状_AI.md",
         },
         {
             "input": OUTPUT_DISPUTE_FOCUS_TXT,
